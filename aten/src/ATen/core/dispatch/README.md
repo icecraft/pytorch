@@ -7,3 +7,6 @@ This folder contains the following files:
 - Dispatcher.h: Main facade interface. Code using the dispatcher should only use this.
 - DispatchTable.h: Implementation of the actual dispatch mechanism. Hash table with kernels, lookup, ...
 - KernelFunction.h: The core interface (i.e. function pointer) for calling a kernel
+
+
+// note: 这里的 dispatch 就是为了找到对应的 算子 实现
