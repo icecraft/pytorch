@@ -13,6 +13,7 @@
 #include <ATen/native/TensorIterator.h>
 #include <ATen/NamedTensorUtils.h>
 #include <ATen/native/ComplexHelper.h>
+#include <ATen/debug.h>
 
 #include <algorithm>
 #include <cmath>
@@ -173,6 +174,7 @@ Tensor& abs_out(Tensor& result, const Tensor& self) {
   return unary_op_impl_with_complex_to_float_out(result, self, abs_stub, /*promotes_integer_to_float=*/false);
 }
 Tensor abs(const Tensor& self) {
+  backtrace();
   return unary_op_impl_with_complex_to_float(self, at::abs_out);
 }
 Tensor& abs_(Tensor& self) {

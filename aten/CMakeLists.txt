@@ -4,9 +4,10 @@ endif()
 
 # Find modules
 if(NOT INTERN_BUILD_MOBILE)
-  list(APPEND CMAKE_MODULE_PATH /usr/lib/x86_64-linux-gnu/)
   list(APPEND CMAKE_LIBRARY_PATH /usr/lib/x86_64-linux-gnu/ /usr/lib/aarch64-linux-gnu/)
 endif()
+
+list(APPEND CMAKE_MODULE_PATH /usr/lib/x86_64-linux-gnu/)
 
 list(APPEND CMAKE_MODULE_PATH
   ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/Modules
