@@ -330,6 +330,12 @@ std::string get_backtrace(
 }
 
 void may_dump_backtrace() {
+  return;
   spdlog::info(get_backtrace());
 }
+
+void may_dump_backtrace_dispatch() {
+  spdlog::info(get_backtrace());
+}
+
 } // namespace c10

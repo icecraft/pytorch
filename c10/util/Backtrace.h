@@ -14,6 +14,7 @@ C10_API std::string get_backtrace(
     bool skip_python_frames = true);
 
 C10_API void may_dump_backtrace(void);
+C10_API void may_dump_backtrace_dispatch(void);
 } // namespace c10
 
 #endif // C10_UTIL_BACKTRACE_H_

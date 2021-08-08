@@ -1,17 +1,18 @@
 #pragma once
 
+#include <torch/csrc/autograd/anomaly_mode.h>
 #include <torch/csrc/autograd/edge.h>
 #include <torch/csrc/autograd/grad_mode.h>
-#include <torch/csrc/autograd/anomaly_mode.h>
+#include <torch/csrc/autograd/input_metadata.h>
 #include <torch/csrc/autograd/profiler.h>
 #include <torch/csrc/autograd/saved_variable.h>
-#include <torch/csrc/autograd/input_metadata.h>
 #include <torch/csrc/autograd/variable.h>
 #include <torch/csrc/utils/python_stub.h>
 #include <torch/csrc/utils/variadic.h>
 
-#include <ATen/ATen.h>
 #include <ATen/SequenceNumber.h>
+
+#include <c10/util/Backtrace.h>
 #include <c10/util/Exception.h>
 
 #include <algorithm>
@@ -22,7 +23,8 @@
 #include <utility>
 #include <vector>
 
-namespace torch { namespace autograd {
+namespace torch {
+namespace autograd {
 
 struct Edge;
 struct FunctionPostHook;
@@ -100,11 +102,9 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
   /// Construct a new `Node` with the given `next_edges`. `sequence_nr` is
   /// a (currently THE) hint to prioritization in the backward() pass, with
   /// higher sequence numbers prioritized before lower sequence numbers.
-  explicit Node(
-      uint64_t sequence_nr,
-      edge_list&& next_edges = edge_list())
-      : sequence_nr_(sequence_nr),
-      next_edges_(std::move(next_edges)) {
+  explicit Node(uint64_t sequence_nr, edge_list&& next_edges = edge_list())
+      : sequence_nr_(sequence_nr), next_edges_(std::move(next_edges)) {
+    c10::may_dump_backtrace();
     if (AnomalyMode::is_enabled()) {
       metadata()->store_stack();
 
@@ -136,6 +136,7 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
     // In the first iteration of named tensors, autograd ignores names and
     // operates on unnamed tensors. In the long term, autograd should
     // probably operate with names.
+    c10::may_dump_backtrace();
     at::NoNamesGuard no_names_guard;
 
     bool pre_sampled = false;
@@ -148,9 +149,9 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
         guard.setForwardThreadId(thread_id_);
         if (guard.needsInputs()) {
           guard.before(
-            name(),
-            std::vector<c10::IValue>(inputs.begin(), inputs.end()),
-            sequence_nr());
+              name(),
+              std::vector<c10::IValue>(inputs.begin(), inputs.end()),
+              sequence_nr());
         } else {
           guard.before(name(), sequence_nr());
         }
@@ -174,15 +175,17 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
   /// Adds the type and shape metadata for a new input. Returns the index of
   /// of the new input.
   uint32_t add_input_metadata(
-    const at::TensorOptions& options
-  , at::IntArrayRef shape
-  , at::Device device) noexcept {
+      const at::TensorOptions& options,
+      at::IntArrayRef shape,
+      at::Device device) noexcept {
+    c10::may_dump_backtrace();
     uint32_t input_nr = input_metadata_.size();
     input_metadata_.emplace_back(options, shape, device);
     return input_nr;
   }
 
   uint32_t add_input_metadata(const at::Tensor& t) noexcept {
+    c10::may_dump_backtrace();
     uint32_t input_nr = input_metadata_.size();
     input_metadata_.emplace_back(t);
     return input_nr;
@@ -190,6 +193,7 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
 
   /// Adds a placeholder for an input that will not be used.
   uint32_t add_input_metadata(undefined_input u) noexcept {
+    c10::may_dump_backtrace();
     uint32_t input_nr = input_metadata_.size();
     input_metadata_.emplace_back();
     return input_nr;
@@ -214,7 +218,8 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
    */
   c10::optional<c10::Stream> stream(const c10::DeviceType device_type) {
     for (const auto& metadata : input_metadata_) {
-      if (metadata.device().type() == device_type) return metadata.stream();
+      if (metadata.device().type() == device_type)
+        return metadata.stream();
     }
 
     return c10::nullopt;
@@ -316,8 +321,8 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
     return reinterpret_cast<std::uintptr_t>(post_hooks_.back().get());
   }
 
-  const std::vector<std::unique_ptr<FunctionPostHook>>& post_hooks() const
-      noexcept {
+  const std::vector<std::unique_ptr<FunctionPostHook>>& post_hooks()
+      const noexcept {
     return post_hooks_;
   }
 
@@ -340,8 +345,8 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
     pre_hooks_.push_back(std::move(pre_hook));
   }
 
-  const std::vector<std::unique_ptr<FunctionPreHook>>& pre_hooks() const
-      noexcept {
+  const std::vector<std::unique_ptr<FunctionPreHook>>& pre_hooks()
+      const noexcept {
     return pre_hooks_;
   }
 
@@ -396,40 +401,46 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
 
   // Note [Thread Safety on Autograd Node]
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  // Autograd Engine let the owning thread which calls Engine::execute to drive the
-  // GraphTask execution, there might be cases that part of the GraphTask is shared
-  // across different `backward()` or `grad()` calls, i.e. fork new threads in the
-  // middle of the forward and call `backward()` separately from different threads.
-  // We need to protect the thread safety on NodeTask to prevent data racing on
-  // shared variables read/write.
+  // Autograd Engine let the owning thread which calls Engine::execute to drive
+  // the GraphTask execution, there might be cases that part of the GraphTask is
+  // shared across different `backward()` or `grad()` calls, i.e. fork new
+  // threads in the middle of the forward and call `backward()` separately from
+  // different threads. We need to protect the thread safety on NodeTask to
+  // prevent data racing on shared variables read/write.
   //
-  // NB: This is only needed for Autograd Nodes that runs on CPU, technically "CUDA",
-  // "XLA" nodes don't need locking because device threads are always single threaded.
+  // NB: This is only needed for Autograd Nodes that runs on CPU, technically
+  // "CUDA", "XLA" nodes don't need locking because device threads are always
+  // single threaded.
   //
-  // Here we add a thread mutex to help protect the Node's thread safety, so that
-  // different threads cannot race the shared data when executing the same NodeTask
-  // from multiple CPU threads. It IS the user/developer responsibility to take
-  // advantage of this mutex to protect the thread safety of their autograd Node.
-  // The general strategy of thread safety on autograd Node:
+  // Here we add a thread mutex to help protect the Node's thread safety, so
+  // that different threads cannot race the shared data when executing the same
+  // NodeTask from multiple CPU threads. It IS the user/developer responsibility
+  // to take advantage of this mutex to protect the thread safety of their
+  // autograd Node. The general strategy of thread safety on autograd Node:
   //
-  // 1. User should lock the mutex during Node::release_variables() if the Node needs
-  //    to release the variables on the fly, this serve the purpose that when we release
-  //    saved_variables from one thread, no other threads can release the saved variables
-  //    concurrently. call
-  //    the Node::apply(),
-  // 2. User should lock the mutex during Node::apply(), this is to ensure Node that
-  //    writing to the shared variable are not racing across threads (i.e. AccumulateGrad
-  //    and custom C++ Autograd Node if writing to shared variables )
-  // 3. item 2 and item 3 should work together so that when we release saved variables
-  //    from one thread, no other threads can call Node::apply(), this ensures the variable
-  //    references from other threads aren't dangling.
-  // 4. if the Node don't release any variables and no shared data read/write in the Node
+  // 1. User should lock the mutex during Node::release_variables() if the Node
+  // needs
+  //    to release the variables on the fly, this serve the purpose that when we
+  //    release saved_variables from one thread, no other threads can release
+  //    the saved variables concurrently. call the Node::apply(),
+  // 2. User should lock the mutex during Node::apply(), this is to ensure Node
+  // that
+  //    writing to the shared variable are not racing across threads (i.e.
+  //    AccumulateGrad and custom C++ Autograd Node if writing to shared
+  //    variables )
+  // 3. item 2 and item 3 should work together so that when we release saved
+  // variables
+  //    from one thread, no other threads can call Node::apply(), this ensures
+  //    the variable references from other threads aren't dangling.
+  // 4. if the Node don't release any variables and no shared data read/write in
+  // the Node
   //    i.e. purely functional, user don't need to lock the mutex
   //
-  // This way we could protect the thread safety on Autograd Node, but we could still
-  // not protect the thread safety on Node pre/post C++ hooks (python hooks are
-  // automatically thread safe), we rely on the user to write thread safe C++ hooks
-  // if they want the hook to be correctly applied in multithreading environment.
+  // This way we could protect the thread safety on Autograd Node, but we could
+  // still not protect the thread safety on Node pre/post C++ hooks (python
+  // hooks are automatically thread safe), we rely on the user to write thread
+  // safe C++ hooks if they want the hook to be correctly applied in
+  // multithreading environment.
   std::mutex mutex_;
 
   edge_list next_edges_;
@@ -508,4 +519,5 @@ edge_list collect_next_edges(Variables&&... variables) {
   make.apply(std::forward<Variables>(variables)...);
   return std::move(make.next_edges);
 }
-}} // namespace torch::autograd
+} // namespace autograd
+} // namespace torch
