@@ -9,11 +9,6 @@
 #include <string>
 #include <vector>
 
-#define UNW_LOCAL_ONLY
-#include <libunwind.h>
-#include <stdio.h>
-#include <iostream>
-
 #ifdef _MSC_VER
 #include <c10/util/win32-headers.h>
 #include <iomanip>
